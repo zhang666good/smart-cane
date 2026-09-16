@@ -3,7 +3,7 @@
 依赖 EC200U 平台 audio API (QuecPython 固件内置).
 格式约定:
   - 播放: audio.Audio.play() 支持 mp3/amr/wav; 下发音频沿用云端原始格式
-  - 录音上传: audio.Record(2).stream 产 AMR-NB, 补 "#!AMR\\n" 头, 存 .amr, multipart 上传
+  - 录音上传: audio.Record(2).stream 产 AMR-NB, 补 "#!AMR\n" 头, 存 .amr, multipart 上传
 请在固件/真机上按实际 API 签名微调.
 
 注: 本模块命名为 media 而非 audio, 以避免与 QuecPython 固件内置 audio 库同名冲突.
@@ -168,6 +168,13 @@ def play_file(local_path):
         except Exception:
             est_s = 5
         a = Audio(2)                     # EC200U 仅喇叭
+        try:
+            # 复位可能被录音(Record(2))占用的喇叭通道, 否则 play 会 ret 非0 而无声音
+            a.stop()
+            a.stopPlayStream()
+            print("[AUDIO] play_file 前已复位 Audio(2)")
+        except Exception as e:
+            print("[AUDIO] play_file 复位 except:", e)
         a.setVolume(vol)                 # 不设音量默认静音
         done = [False]
         cb_ok = [True]
@@ -204,7 +211,7 @@ def record_to_file(duration_s, output_path=None):
     """录音 duration_s 秒, 输出 AMR-NB 文件(EC200U 硬件编码); 成功返回 output_path, 失败 None.
 
     使用 stream 模式: Record(2).stream_start(priority, 8000, seconds), 回调逐段累积 AMR 帧,
-    写盘时补上 "#!AMR\\n" 文件头(Raw AMR 容器). 路径由 audio_dir() 决定(优先 SD, 无卡兜底 Flash).
+    写盘时补上 "#!AMR\n" 文件头(Raw AMR 容器). 路径由 audio_dir() 决定(优先 SD, 无卡兜底 Flash).
     """
     from audio import Record
     d = audio_dir()
@@ -276,7 +283,7 @@ class AmrStreamRecorder:
     """手动开关的 AMR 流录音(验证成功的 bf 真机方案).
 
     设备端无法直接录 WAV/MP3(Record.start 返回 -5, stream_start 用 WAV 报参错),
-    故仍用 AMR: Record(2) + stream_start(4,8000,600) + 回调攒流, 补 "#!AMR\\n" 头.
+    故仍用 AMR: Record(2) + stream_start(4,8000,600) + 回调攒流, 补 "#!AMR\n" 头.
     典型交互(电源键单击开关):
       - start(): 开始录音(不限时长), AMR 帧逐段攒入内存 buf
       - stop() : 结束录音, 补 AMR 头一次性写盘, 返回路径(过短则删除返回 None)
@@ -331,14 +338,25 @@ class AmrStreamRecorder:
 
     def stop(self):
         """停止录音; 返回 AMR 路径, 过短/异常返回 None."""
+        print("[AUDIO] rec.stop: 尝试 stream_stop 释放录音资源...")
         try:
             if self._rec:
-                self._rec.stream_stop()
-        except Exception:
-            pass
+                r_ret = self._rec.stream_stop()
+                print("[AUDIO] rec.stop -> stream_stop ret:", r_ret)
+        except Exception as e:
+            print("[AUDIO] rec.stop -> stream_stop except:", e)
         self._rec = None
         path = self._path
         self._path = None
+        # 释放录音后复位喇叭通道, 避免占用导致后续播放/TTS 无声
+        try:
+            from audio import Audio as _A
+            _a = _A(2)
+            _a.stop()
+            _a.stopPlayStream()
+            print("[AUDIO] rec.stop -> Audio(2) 已复位(stop+stopPlayStream)")
+        except Exception as e:
+            print("[AUDIO] rec.stop -> Audio(2) 复位 except:", e)
         # 测试脚本同款: 内存 _buf 补 AMR 头一次性写盘
         size = len(self._buf)
         if size < 100:
