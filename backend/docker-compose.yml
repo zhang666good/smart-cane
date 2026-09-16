@@ -1,0 +1,47 @@
+# 智能拐杖云端部署编排: MQTT Broker + FastAPI 网关
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: cane-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"   # TCP(EC200U 订阅)
+      - "9001:9001"   # WS(可选, WebSocket 调试)
+    volumes:
+      - ./mqtt:/mosquitto/config:ro
+    healthcheck:
+      # 订阅 $SYS 系统主题, 收到任意一条即健康(mosquitto 每 sys_interval 发布)
+      test: ["CMD", "mosquitto_sub", "-h", "127.0.0.1", "-p", "1883", "-t", "$$SYS/#", "-C", "1", "-W", "15"]
+      interval: 15s
+      timeout: 15s
+      retries: 3
+      start_period: 5s
+
+  backend:
+    build: .
+    container_name: cane-backend
+    restart: unless-stopped
+    depends_on:
+      mqtt:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      # 与 deps/app/.env 相同语义; 服务器部署用真实公网地址供 EC200U 拉取音频
+      - MQTT_HOST=mqtt
+      - MQTT_PORT=1883
+      - DEVICE_TOKEN=${DEVICE_TOKEN:-demo-device-token}
+      - PUBLIC_AUDIO_BASE=${PUBLIC_AUDIO_BASE:-http://123.207.72.88:8000}
+      - COZE_TOKEN=${COZE_TOKEN:-}
+      - COZE_BOT_ID=${COZE_BOT_ID:-}
+      - DATA_DIR=/app/data
+      - AUDIO_DIR=/app/storage/audio
+    volumes:
+      - cane_data:/app/data
+      - cane_audio:/app/storage/audio
+      - cane_logs:/app/logs
+
+volumes:
+  cane_data:
+  cane_audio:
+  cane_logs:

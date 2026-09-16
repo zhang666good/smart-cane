@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.5
+pydantic-settings>=2.1
+paho-mqtt>=1.6.1          # MQTT 下行发布
+mcp>=2.0.0                # MCP SDK(MCPServer + Tool.from_function, Streamable HTTP)
+python-multipart>=0.0.9   # 音频/表单上传解析
+httpx>=0.27               # 调用 Coze 开放接口(预留)
+PyJWT>=2.8                # 角色化 JWT 签发/校验(角色鉴权)
