@@ -13,6 +13,12 @@ import utime as time
 
 from usr.libs.config import get as cfg_get
 
+import _thread
+
+# QuecPython 的 request 线程不安全: 多线程并发 HTTP(sensor 上报 / 录音上传 / ack)
+# 会互相抢占基站 socket 导致挂死。用全局锁串行化所有 HTTP 请求, 并加超时兜底。
+_http_lock = _thread.allocate_lock()
+HTTP_TIMEOUT_S = 8          # 单次 HTTP 超时(秒), 防止网络卡死钉住线程
 
 _elder_token = ""   # elder 角色 JWT, /api/voice/* 上传用 Bearer 携带
 
@@ -47,13 +53,16 @@ def post(path, payload, content_type="application/json", timeout_s=None,
     """POST JSON(或二进制), 返回响应 dict; 失败返回 None.
 
     bearer: 可选 elder/family JWT, 传则追加 Authorization: Bearer 头.
+    全局锁串行化 + 显式超时, 避免多线程并发 request 导致 socket 挂死.
     """
+    _http_lock.acquire()
     try:
         data = payload if isinstance(payload, (bytes, bytearray)) else ujson.dumps(payload)
         headers = _headers(content_type)
         if bearer:
             headers["Authorization"] = "Bearer " + bearer
-        r = request.post(_base() + path, data=data, headers=headers)
+        r = request.post(_base() + path, data=data, headers=headers,
+                         timeout=timeout_s or HTTP_TIMEOUT_S)
         code = r.status_code
         if code == 401:
             print("HTTP 401: 设备token错误")
@@ -63,18 +72,23 @@ def post(path, payload, content_type="application/json", timeout_s=None,
     except Exception as e:
         print("HTTP POST %s failed: %s" % (path, e))
         return None
+    finally:
+        _http_lock.release()
 
 
 def get(path, params=None, timeout_s=None):
+    _http_lock.acquire()
     try:
         url = _base() + path
         if params:
             url = url + "?" + "&".join("%s=%s" % (k, v) for k, v in params.items())
-        r = request.get(url, headers=_headers())
+        r = request.get(url, headers=_headers(), timeout=timeout_s or HTTP_TIMEOUT_S)
         return _read_resp(r)
     except Exception as e:
         print("HTTP GET %s failed: %s" % (path, e))
         return None
+    finally:
+        _http_lock.release()
 
 
 def report_sensor(data):
@@ -113,16 +127,21 @@ def login_elder():
     """用老人账号换取 elder JWT(供 /api/voice/reply 上传鉴权). 成功 True."""
     global _elder_token
     try:
-        r = request.post(
-            _base() + "/api/auth/token",
-            data=ujson.dumps({
-                "user_id": cfg_get("elder_user", "dev-001"),
-                "password": cfg_get("elder_password", "123456"),
-                "device_id": cfg_get("device_id"),
-            }),
-            headers=_headers("application/json"),
-        )
-        tok = r.json().get("token")
+        _http_lock.acquire()
+        try:
+            r = request.post(
+                _base() + "/api/auth/token",
+                data=ujson.dumps({
+                    "user_id": cfg_get("elder_user", "dev-001"),
+                    "password": cfg_get("elder_password", "123456"),
+                    "device_id": cfg_get("device_id"),
+                }),
+                headers=_headers("application/json"),
+                timeout=HTTP_TIMEOUT_S,
+            )
+            tok = r.json().get("token")
+        finally:
+            _http_lock.release()
         if tok:
             _elder_token = tok
             print("login_elder ok")
