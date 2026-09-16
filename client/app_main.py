@@ -29,38 +29,54 @@ playing = False
 # 锁(QuecPython/MicroPython 用 _thread.allocate_lock; 供跨线程保护状态)
 _lock = _thread.allocate_lock()
 
+# LBS 定位缓存: {ts, data}. 由后台线程 lbs_loop 刷新, collect_data 只读缓存.
+_lbs_cache = {"ts": 0, "data": None}
+
+# 三轴缓存: {ts,x,y,z}. 由后台线程 accel_loop 刷新, 上报与跌倒检测只读缓存.
+# 原因: 录音后音频 codec 会让 accel 的 I2C 读阻塞且不可中断, 内联读取会钉死上报线程.
+_accel_cache = {"ts": 0, "x": 0.0, "y": 0.0, "z": 0.0}
+
 
 def now_str():
     return str(time.localtime())
 
 
 def collect_data(include_position=True):
-    """采集板载传感, 组装上报 data dict(结构与 backend SensorReport.data 对应)."""
+    """采集板载传感, 组装上报 data dict(结构与 backend SensorReport.data 对应).
+    accel 由后台线程 accel_loop 刷新缓存(录音后 I2C 会挂, 内联读会钉死本线程);
+    th/light 仍内联, 逐段打点便于后续定位."""
     data = {}
     try:
-        x, y, z = accel.read()
-        data["accel"] = {"x": round(x, 3), "y": round(y, 3), "z": round(z, 3)}
+        a = _accel_cache
+        if a["ts"] > 0:
+            data["accel"] = {"x": round(a["x"], 3), "y": round(a["y"], 3), "z": round(a["z"], 3)}
     except Exception as e:
-        print("accel err:", e)
+        print("accel cache err:", e)
     try:
+        print("[sensor]   th读前")
         h, t = th.read()
+        print("[sensor]   th读后")
         data["humidity"] = round(h, 2)
         data["temperature"] = round(t, 2)
     except Exception as e:
         print("th err:", e)
     try:
+        print("[sensor]   light读前")
         resis, lux = light.read()
+        print("[sensor]   light读后")
         if lux:
             data["light"] = lux
     except Exception as e:
         print("light err:", e)
     if include_position:
+        # LBS 定位由后台线程刷新缓存(lbs_loop), 这里只读缓存, 瞬时返回.
+        # 原因: net.getCellInfo() 在录音/上传占用网络时会挂起, 内联读取会把上报线程钉死.
         try:
-            pos = lbs.get_lbs_data()
+            pos = _lbs_cache.get("data")
             if pos:
                 data["position"] = pos
         except Exception as e:
-            print("lbs err:", e)
+            print("lbs cache err:", e)
     return data
 
 
@@ -70,7 +86,10 @@ _fall_count = 0
 def check_fall_trigger():
     global _fall_count
     try:
-        mag = accel.magnitude()
+        a = _accel_cache
+        if a["ts"] <= 0:
+            return None
+        mag = (a["x"]**2 + a["y"]**2 + a["z"]**2) ** 0.5
     except Exception:
         return None
     thr = cfg_get("fall_detect_threshold_g", 1.6)
@@ -154,14 +173,73 @@ def local_tts(text):
 
 
 # ---------- 主线程: 传感采集 + SOS ----------
+_rep_count = [0]
+
 def sensor_loop():
+    """传感上报循环. 整体 try/except: 单次上报异常/超时不得让线程死亡, 否则上报永久停止.
+    逐段打点: 便于定位是卡在『传感器读取』还是『网络上报』.
+    """
     global sos_active
+    print("[sensor] sensor_loop 启动")
     while True:
-        interval = cfg_get("sos_interval_s" if sos_active else "sensor_interval_s", 10)
-        data = collect_data()
-        print("report data:", data)
-        http_api.report_sensor(data)
-        check_fall_trigger()
+        try:
+            interval = cfg_get("sos_interval_s" if sos_active else "sensor_interval_s", 10)
+            _rep_count[0] += 1
+            t0 = time.ticks_ms()
+            print("[sensor] #%d 采集前" % _rep_count[0])
+            data = collect_data()
+            print("[sensor] #%d 采集后, 用时 %dms" % (_rep_count[0],
+                                                     time.ticks_diff(time.ticks_ms(), t0)))
+            print("report data:", data)
+            resp = http_api.report_sensor(data)
+            print("[sensor] #%d 上报耗时 %dms resp=%s" % (
+                _rep_count[0], time.ticks_diff(time.ticks_ms(), t0), resp))
+            check_fall_trigger()
+        except Exception as e:
+            print("[sensor] 上报异常(已捕获,继续循环):", e)
+        time.sleep(interval)
+
+
+def lbs_loop():
+    """后台 LBS 定位: 独立线程刷新 _lbs_cache, 与上报热路径解耦.
+
+    net.getCellInfo() 速度慢且在录音/上传抢网时会挂起; 原内联读取会把
+    sensor_loop 钉死。这里单独线程刷新缓存, 即使挂死也只影响本线程,
+    上报线程始终读上一帧缓存(瞬时)。
+    """
+    print("[lbs] lbs_loop 启动")
+    while True:
+        interval = cfg_get("lbs_interval_s", 30)
+        try:
+            pos = lbs.get_lbs_data()
+            if pos:
+                _lbs_cache["ts"] = time.ticks_ms()
+                _lbs_cache["data"] = pos
+                print("[lbs] 刷新成功:", pos.get("lac"), pos.get("cid"))
+        except Exception as e:
+            print("[lbs] 刷新异常:", e)
+        time.sleep(interval)
+
+
+def accel_loop():
+    """后台三轴读取: 独立线程刷新 _accel_cache, 与上报/跌倒检测解耦.
+
+    accel 的 I2C 读在录音(audio codec)后会阻塞且无超时, 内联读取会把
+    sensor_loop 钉死。这里单独线程刷新缓存; 即使某次读挂死, 也只影响本线程,
+    上报与跌倒检测始终读上一帧缓存, 线程不会因此死亡。
+    """
+    print("[accel] accel_loop 启动")
+    while True:
+        interval = cfg_get("accel_interval_s", 1)
+        try:
+            x, y, z = accel.read()
+            _accel_cache["ts"] = time.ticks_ms()
+            _accel_cache["x"] = x
+            _accel_cache["y"] = y
+            _accel_cache["z"] = z
+            print("[accel] 刷新: %.3f %.3f %.3f" % (x, y, z))
+        except Exception as e:
+            print("[accel] 读取异常(缓存沿用上帧):", e)
         time.sleep(interval)
 
 
@@ -300,8 +378,10 @@ def main():
     # 1. 入网: Qth 已能连到公网(serUrl/DK 打印)即证明网络OK, 不再阻塞等待.
     #    (如需显式校验可用 usr.libs.networker.ensure_online(), 一般无需)
 
-    # 2. 启动传感上报线程 + 录音/上传线程 + 按键监听
+    # 2. 启动传感上报线程 + 录音/上传线程 + 按键监听 + LBS定位/三轴后台线程
     _thread.start_new_thread(sensor_loop, ())
+    _thread.start_new_thread(lbs_loop, ())
+    _thread.start_new_thread(accel_loop, ())
     if not _started[0]:
         _thread.start_new_thread(_rec_worker, ())
     _thread.start_new_thread(key_loop, ())
