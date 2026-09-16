@@ -59,6 +59,7 @@ def download_audio(audio_url, timeout_s=None):
     """下载音频到本地临时目录(优先 SD 卡, 无卡兜底内置 Flash), 返回本地路径; 失败 None.
 
     使用 QuecPython 官方 request.get(url, decode=False) + response.content 生成器逐块写入.
+    加全局 HTTP 锁 + 超时, 避免与上报并发挂死.
     """
     d = audio_dir()
     if d is None:
@@ -70,44 +71,49 @@ def download_audio(audio_url, timeout_s=None):
         return None
     resp = None
     try:
-        resp = request.get(audio_url, decode=False)
-        if resp.status_code != 200:
-            print("download failed, status:", resp.status_code)
-            return None
-        # 尝试取 Content-Length 以便打印百分比进度
-        total = None
-        headers = getattr(resp, "headers", None)
-        if isinstance(headers, dict):
-            cl = headers.get("Content-Length") or headers.get("content-length")
-        else:
-            cl = None
+        http_api._http_lock.acquire()
         try:
-            total = int(cl) if cl else None
-        except Exception:
+            resp = request.get(audio_url, decode=False,
+                               timeout=cfg_get("http_timeout_s", 15))
+            if resp.status_code != 200:
+                print("download failed, status:", resp.status_code)
+                return None
+            # 尝试取 Content-Length 以便打印百分比进度
             total = None
-        with open(local_path, "wb") as f:
-            size = 0
-            bucket = -1
-            for chunk in resp.content:
-                if not chunk:
-                    break
-                # QuecPython 下 content 生成器元素可能为 bytes/int
-                d_ = bytes([chunk]) if isinstance(chunk, int) else chunk
-                f.write(d_)
-                size += len(d_)
-                if total:
-                    pct = size * 100 // total
-                    b = pct // 25
-                    if b != bucket:
-                        bucket = b
-                        print("download progress: %d%% (%d/%d)" % (pct, size, total))
-                else:
-                    if size >= (bucket + 1) * 20000:
-                        bucket += 1
-                        print("download progress: %d bytes" % size)
-        print("download complete:", local_path, "size:", size,
-              ("total: " + str(total) if total else ""))
-        return local_path
+            headers = getattr(resp, "headers", None)
+            if isinstance(headers, dict):
+                cl = headers.get("Content-Length") or headers.get("content-length")
+            else:
+                cl = None
+            try:
+                total = int(cl) if cl else None
+            except Exception:
+                total = None
+            with open(local_path, "wb") as f:
+                size = 0
+                bucket = -1
+                for chunk in resp.content:
+                    if not chunk:
+                        break
+                    # QuecPython 下 content 生成器元素可能为 bytes/int
+                    d_ = bytes([chunk]) if isinstance(chunk, int) else chunk
+                    f.write(d_)
+                    size += len(d_)
+                    if total:
+                        pct = size * 100 // total
+                        b = pct // 25
+                        if b != bucket:
+                            bucket = b
+                            print("download progress: %d%% (%d/%d)" % (pct, size, total))
+                    else:
+                        if size >= (bucket + 1) * 20000:
+                            bucket += 1
+                            print("download progress: %d bytes" % size)
+            print("download complete:", local_path, "size:", size,
+                  ("total: " + str(total) if total else ""))
+            return local_path
+        finally:
+            http_api._http_lock.release()
     except Exception as e:
         print("download except:", e)
         return None
