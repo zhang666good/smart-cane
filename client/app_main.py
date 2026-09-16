@@ -137,9 +137,18 @@ def local_tts(text):
     if not text:
         return
     try:
-        from audio import TTS
+        from audio import Audio, TTS
+        # 复位被录音(Record(2))占用的喇叭通道, 否则 TTS 无声
+        try:
+            ta = Audio(2)
+            ta.stop()
+            ta.stopPlayStream()
+            print("[AUDIO] local_tts 前已复位 Audio(2)")
+        except Exception:
+            pass
         tts = TTS(2)                 # EC200U 仅支持喇叭(通道2)
-        tts.play(4, 1, 2, text)      # priority=4(高), breakin=1(可打断), mode=2(UTF-8)
+        t_ret = tts.play(4, 1, 2, text)      # priority=4(高), breakin=1(可打断), mode=2(UTF-8)
+        print("[AUDIO] TTS play ret:", t_ret, "text:", text)
     except Exception as e:
         print("tts error:", e, text)
 
