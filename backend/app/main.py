@@ -1,6 +1,6 @@
 """FastAPI 网关入口。
 
-运行:  cd backend && .venv\\Scripts\\python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+运行:  cd backend && .venv\Scripts\python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 挂载：
   - REST 设备接入路由   /api/device/*  /audio/*
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request
 from .config import BASE_DIR, get_settings
 from .db import init_db
 from .mcp_servers import (admin_server, elder_server, family_server, server as mcp_server)
-from .routers import audio_router, auth_router, device_router, family_router, admin_router, voice_router
+from .routers import audio_router, auth_router, device_router, family_router, admin_router, voice_router, ai_router
 
 logger = logging.getLogger("cane.backend")
 
@@ -102,6 +102,7 @@ def create_app() -> FastAPI:
     application.include_router(family_router)
     application.include_router(admin_router)
     application.include_router(voice_router)
+    application.include_router(ai_router)
 
     # 挂载 MCP 服务器为 Streamable HTTP 传输 /mcp
     # Coze: "添加 MCP 服务" → 流式 HTTP URL: http://<host>:<port>/mcp

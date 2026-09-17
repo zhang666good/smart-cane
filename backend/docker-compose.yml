@@ -17,6 +17,12 @@ services:
       retries: 3
       start_period: 5s
 
+  # 音频转码服务: 家人端 WAV -> AMR(8k), 设备下载/播放更快. 仅供 backend 内部调用
+  transcode:
+    build: ./transcode
+    container_name: cane-transcode
+    restart: unless-stopped
+
   backend:
     build: .
     container_name: cane-backend
@@ -36,6 +42,17 @@ services:
       - COZE_BOT_ID=${COZE_BOT_ID:-}
       - DATA_DIR=/app/data
       - AUDIO_DIR=/app/storage/audio
+      - TRANSCODE_URL=http://transcode:8001
+      # 百度短语音识别(ASR)密钥; 来自 host .env(不进 git), 语义与 backend/app/.env 一致
+      - BAIDU_API_KEY=${BAIDU_API_KEY:-}
+      - BAIDU_SECRET_KEY=${BAIDU_SECRET_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - BAIDU_DEV_PID=${BAIDU_DEV_PID:-1537}
+      - BAIDU_CHANNEL=${BAIDU_CHANNEL:-1}
+      - BAIDU_CUID=${BAIDU_CUID:-cane}
+      - BAIDU_RATE=${BAIDU_RATE:-8000}
     volumes:
       - cane_data:/app/data
       - cane_audio:/app/storage/audio

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 密钥/凭据(绝不入库)
+*.env
+!**/env.example
+backend/_upload.py
+backend/_upload_req.py
+backend/_recon.py
+backend/_*_.py
+backend/test_baidu_asr.py
+backend/test_transcode.py
+client/test_*.py
+
+# Node / Flet
+node_modules/
+
+# 临时/构建
+*.log
+*.pid
