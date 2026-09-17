@@ -1,3 +1,8 @@
+"""设备端主应用: 编排 传感上报 / MQTT 下行 / 模式切换 / SOS / 跌倒检测 / poll 兜底.
+
+运行: 本项目扁平拷贝到 EC200U /usr/libs/, 使用 QPYcom 执行 app_main.py.
+(与 usr/d.py 一致: 依赖 /usr 在 sys.path, usr.libs.* 包式导入)
+"""
 import utime as time
 import _thread
 
