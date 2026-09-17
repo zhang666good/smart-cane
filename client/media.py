@@ -3,7 +3,7 @@
 依赖 EC200U 平台 audio API (QuecPython 固件内置).
 格式约定:
   - 播放: audio.Audio.play() 支持 mp3/amr/wav; 下发音频沿用云端原始格式
-  - 录音上传: audio.Record(2).stream 产 AMR-NB, 补 "#!AMR\n" 头, 存 .amr, multipart 上传
+  - 录音上传: audio.Record(2).stream 产 AMR-NB, 补 "#!AMR\\n" 头, 存 .amr, multipart 上传
 请在固件/真机上按实际 API 签名微调.
 
 注: 本模块命名为 media 而非 audio, 以避免与 QuecPython 固件内置 audio 库同名冲突.
@@ -59,7 +59,6 @@ def download_audio(audio_url, timeout_s=None):
     """下载音频到本地临时目录(优先 SD 卡, 无卡兜底内置 Flash), 返回本地路径; 失败 None.
 
     使用 QuecPython 官方 request.get(url, decode=False) + response.content 生成器逐块写入.
-    加全局 HTTP 锁 + 超时, 避免与上报并发挂死.
     """
     d = audio_dir()
     if d is None:
@@ -217,7 +216,7 @@ def record_to_file(duration_s, output_path=None):
     """录音 duration_s 秒, 输出 AMR-NB 文件(EC200U 硬件编码); 成功返回 output_path, 失败 None.
 
     使用 stream 模式: Record(2).stream_start(priority, 8000, seconds), 回调逐段累积 AMR 帧,
-    写盘时补上 "#!AMR\n" 文件头(Raw AMR 容器). 路径由 audio_dir() 决定(优先 SD, 无卡兜底 Flash).
+    写盘时补上 "#!AMR\\n" 文件头(Raw AMR 容器). 路径由 audio_dir() 决定(优先 SD, 无卡兜底 Flash).
     """
     from audio import Record
     d = audio_dir()
@@ -285,11 +284,32 @@ def upload_voice_reply(local_path, reply_to=""):
     })
 
 
+def upload_voice_ai(local_path):
+    """上传老人语音到 AI 对话接口(/api/device/audio/chat, x-device-token).
+
+    走长按 AI 对话流程, base64 JSON 提交. 后端: 百度ASR -> DeepSeek -> TTS(AMR)
+    -> MQTT 下发设备播放, 故本函数只负责上报并返回 {ok, reply, audio_url, ...}."""
+    import ubinascii
+    try:
+        with open(local_path, "rb") as f:
+            raw = f.read()
+    except Exception as e:
+        print("upload read fail:", e)
+        return None
+    b64str = ubinascii.b2a_base64(raw).decode()
+    return http_api.post("/api/device/audio/chat", {
+        "device_id": cfg_get("device_id"),
+        "audio_b64": b64str,
+        "filename": local_path.split("/")[-1],
+        "content_type": "audio/amr",
+    })
+
+
 class AmrStreamRecorder:
     """手动开关的 AMR 流录音(验证成功的 bf 真机方案).
 
     设备端无法直接录 WAV/MP3(Record.start 返回 -5, stream_start 用 WAV 报参错),
-    故仍用 AMR: Record(2) + stream_start(4,8000,600) + 回调攒流, 补 "#!AMR\n" 头.
+    故仍用 AMR: Record(2) + stream_start(4,8000,600) + 回调攒流, 补 "#!AMR\\n" 头.
     典型交互(电源键单击开关):
       - start(): 开始录音(不限时长), AMR 帧逐段攒入内存 buf
       - stop() : 结束录音, 补 AMR 头一次性写盘, 返回路径(过短则删除返回 None)
@@ -397,4 +417,4 @@ class AmrStreamRecorder:
             except Exception:
                 pass
         self._rec = None
-        self._path = None
+        self._path = Nonurn True\n\n    def stop(self):\n        \"\"\"停止录音; 返回 AMR 路径, 过短/异常返回 None.\"\"\"\n        print(\"[AUDIO] rec.stop: 尝试 stream_stop 释放录音资源...\")\n        try:\n            if self._rec:\n                r_ret = self._rec.stream_stop()\n                print(\"[AUDIO] rec.stop -> stream_stop ret:\", r_ret)\n        except Exception as e:\n            print(\"[AUDIO] rec.stop -> stream_stop except:\", e)\n        self._rec = None\n        path = self._path\n        self._path = None\n        # 释放录音后复位喇叭通道, 避免占用导致后续播放/TTS 无声\n        try:\n            from audio import Audio as _A\n            _a = _A(2)\n            _a.stop()\n            _a.stopPlayStream()\n            print(\"[AUDIO] rec.stop -> Audio(2) 已复位(stop+stopPlayStream)\")\n        except Exception as e:\n            print(\"[AUDIO] rec.stop -> Audio(2) 复位 except:\", e)\n        # 测试脚本同款: 内存 _buf 补 AMR 头一次性写盘\n        size = len(self._buf)\n        if size < 100:\n            print(\"recording too short, discarded; dur=%ds size=%dB\" %\n                  (time.ticks_diff(time.ticks_ms(), self._t0) // 1000, size))\n            try:\n                uos.remove(path)\n            except Exception:\n                pass\n            return None\n        try:\n            amr = b\"\\x23\\x21\\x41\\x4d\\x52\\x0a\"   # \"#!AMR\\n\"\n            with open(path, \"wb\") as f:\n                if self._buf[:6] != amr:\n                    f.write(amr)\n                f.write(self._buf)\n        except Exception as e:\n            print(\"rec save err:\", e)\n            return None\n        print(\"recording done:\", path, size)\n        return path\n\n    def _cleanup(self, delete=False):\n        try:\n            if self._rec:\n                self._rec.stream_stop()\n        except Exception:\n            pass\n        if delete and self._path:\n            try:\n                uos.remove(self._path)\n            except Exception:\n                pass\n        self._rec = None\n        self._path = None\n"}]
