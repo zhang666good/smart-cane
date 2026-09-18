@@ -26,9 +26,23 @@ def verify_device(x_device_token: str = Header(default="")) -> None:
 
 @router.post("/sensor/report")
 def sensor_report(body: SensorReport, _=Depends(verify_device)):
-    """接收传感数据并落库；按需对跌倒等做即时触发(Coze 侧由 MCP 再判定)。"""
+    """接收传感数据并落库；按需对跌倒等做即时触发(Coze 侧由 MCP 再判定)。
+
+    附带业务事件提取: optional.ultrasonic 距离过近/ water 积水 -> events 表,
+    供家人端「今日动态」展示。
+    """
     db.upsert_user(body.device_id)          # 确保用户存在
     db.add_sensor_record(body.device_id, body.data)
+    opt = (body.data or {}).get("optional") or {}
+    try:
+        ultra = opt.get("ultrasonic")
+        if isinstance(ultra, (int, float)) and 0 < ultra < 0.5:
+            db.add_event(body.device_id, "obstacle",
+                         f"障碍物预警(距离 {ultra:.2f}m)")
+        if opt.get("water"):
+            db.add_event(body.device_id, "water", "检测地面积水")
+    except Exception as e:
+        print("[sensor_report] event extract skip:", e)
     # 预留: 触发 Coze 评估(可异步) —— 在此调用 coze_client.evaluate(body)
     return {"ok": True, "device_id": body.device_id}
 

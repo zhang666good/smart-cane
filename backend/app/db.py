@@ -116,7 +116,6 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS vm_idx_device_ts ON voice_messages(device_id, ts);
             CREATE INDEX IF NOT EXISTS vm_idx_sender ON voice_messages(sender_id, ts);
             CREATE TABLE IF NOT EXISTS operation_log (
-
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 operator    TEXT NOT NULL,          -- 管理员 user_id
                 action      TEXT NOT NULL,          -- 操作类型(如 device_control)
@@ -124,8 +123,21 @@ def init_db() -> None:
                 detail      TEXT DEFAULT '{}',      -- JSON 细节
                 ts          REAL DEFAULT (strftime('%s','now'))
             );
+            CREATE TABLE IF NOT EXISTS events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id   TEXT NOT NULL,
+                type        TEXT NOT NULL,        -- obstacle | water | position | ...
+                message     TEXT NOT NULL,
+                ts          REAL DEFAULT (strftime('%s','now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_device_ts ON events(device_id, ts);
             """
         )
+        # 增量迁移: alerts 表补充 remark 列(复用同一 cursor, 避免重入 _lock 死锁)
+        try:
+            cur.execute("ALTER TABLE alerts ADD COLUMN remark TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
 
 
 # ---------------- users ----------------
@@ -194,13 +206,22 @@ def latest_sensors(device_id: str) -> dict | None:
         return {"data": json.loads(row["data"]), "ts": row["ts"]}
 
 
-def sensor_history(device_id: str, limit: int = 50) -> list[dict]:
+def sensor_history(device_id: str, limit: int = 50,
+                   start_ts: float | None = None,
+                   end_ts: float | None = None) -> list[dict]:
+    """按时间范围(可选)查询传感历史, 时间升序返回(便于画趋势/轨迹)."""
+    sql = "SELECT data, ts FROM sensor_records WHERE device_id=?"
+    args: list = [device_id]
+    if start_ts is not None:
+        sql += " AND ts>=?"
+        args.append(start_ts)
+    if end_ts is not None:
+        sql += " AND ts<=?"
+        args.append(end_ts)
+    sql += " ORDER BY ts ASC LIMIT ?"
+    args.append(limit)
     with _cursor() as cur:
-        cur.execute(
-            "SELECT data, ts FROM sensor_records WHERE device_id=? "
-            "ORDER BY ts DESC LIMIT ?",
-            (device_id, limit),
-        )
+        cur.execute(sql, args)
         return [{"data": json.loads(r["data"]), "ts": r["ts"]} for r in cur.fetchall()]
 
 
@@ -243,6 +264,49 @@ def list_alerts(device_id: str | None = None, limit: int = 50) -> list[dict]:
             )
         else:
             cur.execute("SELECT * FROM alerts ORDER BY ts DESC LIMIT ?", (limit,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def mark_alert_handled(alert_id: int, remark: str = "") -> dict | None:
+    """标记告警已处理(可附备注); 返回更新后的告警, 不存在返回 None."""
+    with _cursor() as cur:
+        cur.execute(
+            "UPDATE alerts SET handled=1, remark=? WHERE id=?", (remark, alert_id))
+        if cur.rowcount == 0:
+            return None
+        cur.execute("SELECT * FROM alerts WHERE id=?", (alert_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_alert(alert_id: int) -> dict | None:
+    with _cursor() as cur:
+        cur.execute("SELECT * FROM alerts WHERE id=?", (alert_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+# ---------------- events(障碍物/积水/位置等业务事件) ----------------
+def add_event(device_id: str, type_: str, message: str) -> int:
+    with _cursor() as cur:
+        cur.execute(
+            "INSERT INTO events(device_id, type, message) VALUES(?,?,?)",
+            (device_id, type_, message),
+        )
+        return cur.lastrowid
+
+
+def list_events(device_id: str, limit: int = 50,
+                start_ts: float | None = None) -> list[dict]:
+    sql = "SELECT * FROM events WHERE device_id=?"
+    args: list = [device_id]
+    if start_ts is not None:
+        sql += " AND ts>=?"
+        args.append(start_ts)
+    sql += " ORDER BY ts DESC LIMIT ?"
+    args.append(limit)
+    with _cursor() as cur:
+        cur.execute(sql, args)
         return [dict(r) for r in cur.fetchall()]
 
 # ---------------- accounts / bindings / operation_log ----------------

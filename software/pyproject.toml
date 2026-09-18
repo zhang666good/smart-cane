@@ -1,0 +1,40 @@
+[project]
+name = "cane_family_app"
+version = "0.1.0"
+description = "智能拐杖 · 老人家人端 App (Flet)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Cane Project", email = "dev@example.com" }
+]
+dependencies = [
+    "flet>=0.83.0",
+    "flet-audio-recorder>=1.0.0",
+    "flet-map>=1.0.0",
+    "requests>=2.31.0",
+]
+
+[dependency-groups]
+dev = [
+    "flet-cli>=0.83.0",
+    "flet-desktop>=0.83.0",
+    "flet-web>=0.83.0",
+    "flet[test]>=0.83.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "integration: 需真实后端已启动的端到端测试(uv run pytest -m integration)",
+]
+
+[tool.flet]
+org = "com.cane"
+product = "cane-family-app"
+company = "Cane Project"
+copyright = "Copyright (C) 2026 by Cane Project"
+
+[tool.flet.app]
+path = "src"

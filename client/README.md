@@ -1,4 +1,4 @@
-# Smart Cane - EC200U 设备端 (client)
+﻿# Smart Cane - EC200U 设备端 (client)
 
 基于 QuecPython 的智能拐杖设备端。通过与 backend(FastAPI 网关) 配合实现:
 - 板载传感采集上报 (LIS2DH12 三轴 / Ath20 温湿 / gl5528 光敏 / LBS 定位)

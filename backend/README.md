@@ -4,8 +4,8 @@
 
 ```powershell
 py -3.11 -m venv .venv
-.\\.venv\\Scripts\\python -m pip install --upgrade pip
-.\\.venv\\Scripts\\python -m pip install -r requirements.txt
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\python -m pip install -r requirements.txt
 Copy-Item .env.example .env   # 按需修改
 ```
 
@@ -15,8 +15,8 @@ Copy-Item .env.example .env   # 按需修改
 ## 本地 MQTT Broker (amqtt, 纯 Python)
 
 ```powershell
-.\\.venv\\Scripts\\python -m pip install amqtt
-.\\.venv\\Scripts\\amqtt.exe -c mqtt_broker.toml -d   # 监听 0.0.0.0:1883
+.\.venv\Scripts\python -m pip install amqtt
+.\.venv\Scripts\amqtt.exe -c mqtt_broker.toml -d   # 监听 0.0.0.0:1883
 ```
 
 快速自检(订阅端 + 发布端两个终端):
@@ -26,7 +26,7 @@ Copy-Item .env.example .env   # 按需修改
 ## 启动
 
 ```powershell
-.\\.venv\\Scripts\\python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+.\.venv\Scripts\python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 - REST 网关:      http://127.0.0.1:8000

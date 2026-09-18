@@ -3,7 +3,7 @@
 依赖 EC200U 平台 audio API (QuecPython 固件内置).
 格式约定:
   - 播放: audio.Audio.play() 支持 mp3/amr/wav; 下发音频沿用云端原始格式
-  - 录音上传: audio.Record(2).stream 产 AMR-NB, 补 "#!AMR\n" 头, 存 .amr, multipart 上传
+  - 录音上传: audio.Record(2).stream 产 AMR-NB, 补 "#!AMR\\n" 头, 存 .amr, multipart 上传
 请在固件/真机上按实际 API 签名微调.
 
 注: 本模块命名为 media 而非 audio, 以避免与 QuecPython 固件内置 audio 库同名冲突.
@@ -216,7 +216,7 @@ def record_to_file(duration_s, output_path=None):
     """录音 duration_s 秒, 输出 AMR-NB 文件(EC200U 硬件编码); 成功返回 output_path, 失败 None.
 
     使用 stream 模式: Record(2).stream_start(priority, 8000, seconds), 回调逐段累积 AMR 帧,
-    写盘时补上 "#!AMR\n" 文件头(Raw AMR 容器). 路径由 audio_dir() 决定(优先 SD, 无卡崩底 Flash).
+    写盘时补上 "#!AMR\\n" 文件头(Raw AMR 容器). 路径由 audio_dir() 决定(优先 SD, 无卡兜底 Flash).
     """
     from audio import Record
     d = audio_dir()
@@ -287,9 +287,8 @@ def upload_voice_reply(local_path, reply_to=""):
 def upload_voice_ai(local_path):
     """上传老人语音到 AI 对话接口(/api/device/audio/chat, x-device-token).
 
-    走长按 AI 对话流程, base64 JSON 提交. 后端仅做 ASR+AI+TTS 并返回 audio_url,
-    由设备端直接播返回的音频(不再 MQTT 下发), 故本函数只负责上报并返回
-    {ok, reply, audio_url, ...}.
+    走长按 AI 对话流程, base64 JSON 提交. 后端: 百度ASR -> DeepSeek -> TTS(AMR)
+    -> MQTT 下发设备播放, 故本函数只负责上报并返回 {ok, reply, audio_url, ...}.
     """
     import ubinascii
     try:
@@ -311,7 +310,7 @@ class AmrStreamRecorder:
     """手动开关的 AMR 流录音(验证成功的 bf 真机方案).
 
     设备端无法直接录 WAV/MP3(Record.start 返回 -5, stream_start 用 WAV 报参错),
-    故仍用 AMR: Record(2) + stream_start(4,8000,600) + 回调攒流, 补 "#!AMR\n" 头.
+    故仍用 AMR: Record(2) + stream_start(4,8000,600) + 回调攒流, 补 "#!AMR\\n" 头.
     典型交互(电源键单击开关):
       - start(): 开始录音(不限时长), AMR 帧逐段攒入内存 buf
       - stop() : 结束录音, 补 AMR 头一次性写盘, 返回路径(过短则删除返回 None)

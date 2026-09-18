@@ -64,24 +64,39 @@ def _build_llm():
     )
 
 
-def _llm_tools(role: str):
-    """把该角色可用的 MCP 工具函数转成 LangChain Runnable 工具供模型 bind.
+def _agent_tools(role: str, device_id: str):
+    """为该角色可用的 MCP 工具生成 langchain 工具, 并预绑定 device_id.
 
-    mcp_servers._tools_for(role) 已按角色过滤; 这里取底层函数转 langchain tool.
-    本轮只做绑定与调用方日志占位, 真实 tool 循环执行后续接入(见 chat) 。
+    返回 (tools, name2exec): Tools 用于 bind_tools(模型 schema),
+    name2exec[name] 是 langchain Runnable, 调用时底层函数已拿到 device_id,
+    避免模型需要自己填 device_id(工具签名里 device_id 已被 partial 占位, 不出现在 schema)。
     """
+    import functools
+    import inspect
     from langchain_core.tools import tool as lc_tool
-    from .mcp_servers import _tools_for
-    bound = []
-    for t in _tools_for(role):
-        fn = getattr(t, "fn", None)
-        if fn is None or not callable(fn):
+    from .mcp_servers import _ALL
+
+    tools, name2exec = [], {}
+    for name, (fn, roles) in _ALL.items():
+        if role not in roles:
             continue
-        try:
-            bound.append(lc_tool(fn))
-        except Exception as e:
-            log.warning("[ai] 工具 %s 绑定失败: %s", getattr(t, "name", "?"), e)
-    return bound
+        bound = fn
+        if "device_id" in inspect.signature(fn).parameters:
+            # 包装成真函数注入 device_id: 显式 __signature__ 去掉 device_id,
+            # 因此模型 schema 不再要求填 device_id(inspect 优先用 __signature__)
+            params = [p for p in inspect.signature(fn).parameters.values()
+                      if p.name != "device_id"]
+            new_sig = inspect.signature(fn).replace(parameters=params)
+
+            @functools.wraps(fn)
+            def bound(*args, _fn=fn, device_id=device_id, **kwargs):
+                return _fn(*args, device_id=device_id, **kwargs)
+
+            bound.__signature__ = new_sig  # type: ignore[attr-defined]
+        lc = lc_tool(bound)
+        tools.append(lc)
+        name2exec[getattr(lc, "name", None) or bound.__name__] = lc
+    return tools, name2exec
 
 
 def chat(role: str, text: str, device_id: str,
@@ -101,10 +116,14 @@ def chat(role: str, text: str, device_id: str,
 
 def _chat_llm(role: str, text: str, device_id: str,
               history: list[dict] | None) -> ChatResult:
-    """真实 LLM 调用(带工具绑定)。"""
-    from langchain_core.messages import HumanMessage, SystemMessage
+    """真实 LLM 调用(带 ReAct 工具循环).
+
+    模型请求调用工具时, 实际执行 MCP 工具函数取出真实数据(get_sensors/alert_query等),
+    把工具结果(ToolMessage)回传给模型, 再由模型整合成自然语言回复。
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
     llm = _build_llm()
-    tools = _llm_tools(role)
+    tools, name2exec = _agent_tools(role, device_id)
     if tools:
         llm = llm.bind_tools(tools)
 
@@ -118,10 +137,41 @@ def _chat_llm(role: str, text: str, device_id: str,
             msgs.append(HumanMessage(content=str(c)))
     msgs.append(HumanMessage(content=text))
 
-    resp = llm.invoke(msgs)
-    reply = (getattr(resp, "content", "") or "").strip() or "（无回复）"
+    reply = ""
+    tool_calls = 0
+    # 多轮工具循环: 最多 MAX_ITERS 次 推理→工具 往返
+    for _ in range(MAX_AGENT_ITERS):
+        resp = llm.invoke(msgs)
+        msgs.append(resp)
+        tcs = getattr(resp, "tool_calls", None) or []
+        if not tcs:
+            reply = (getattr(resp, "content", "") or "").strip() or "（无回复）"
+            break
+        tool_calls += len(tcs)
+        for tc in tcs:
+            index, name, args = tc.get("index", 0), tc.get("name", ""), tc.get("args") or {}
+            exec = name2exec.get(name)
+            if exec is None:
+                out = f"[工具错误] 未知工具: {name}"
+            else:
+                try:
+                    out = exec.invoke(args)
+                except Exception as ex:
+                    log.warning("[ai] 工具 %s 执行失败: %s", name, ex)
+                    out = f"[工具错误] {ex}"
+            log.info("[ai] 工具调用 %s args=%s -> %s", name, args, str(out)[:200])
+            msgs.append(ToolMessage(
+                content=str(out),
+                tool_call_id=tc.get("id", f"call-{index}"),
+            ))
+    else:
+        reply = "（我暂时无法完成该操作，请再问一次）"
+
     _persist(device_id, role, text, reply)
-    return ChatResult(text=reply, tool_calls=len(resp.tool_calls or []) if tools else 0)
+    return ChatResult(text=reply, tool_calls=tool_calls)
+
+
+MAX_AGENT_ITERS = 6
 
 
 def _persist(device_id: str, role: str, user_text: str, assistant_text: str) -> None:

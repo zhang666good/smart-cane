@@ -239,7 +239,7 @@ def accel_loop():
             _accel_cache["z"] = z
             print("[accel] 刷新: %.3f %.3f %.3f" % (x, y, z))
         except Exception as e:
-            print("[accel] 读取异常(缓存沿用上一帧):", e)
+            print("[accel] 读取异常(缓存沿用上帧):", e)
         time.sleep(interval)
 
 

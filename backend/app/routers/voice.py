@@ -2,9 +2,15 @@
 
 - 家人 -> 设备: POST 上传语音(存储+入库) -> 经 dialog_service 高优先级下发 -> 设备播放
 - 设备 -> 家人: 老人回复录音上传 -> 存为 is_reply -> 家人 App 拉取
+
+家人端上传的 WAV 经独立 ffmpeg 转码容器 -> AMR-NB(8kHz 单声道) 存储下发,
+文件体积大幅缩小, 设备端下载/播放更快; 转码服务不可用时回退原样存 WAV.
 """
+import base64
+import json
 import os
 import struct
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 
@@ -21,6 +27,34 @@ router = APIRouter(prefix="/api/voice", tags=["voice"])
 # 上传目录(正式应接对象存储 / 音频服务)
 MEDIA_DIR = get_settings().audio_dir
 PUBLIC_AUDIO_BASE = get_settings().public_audio_base
+# 独立 ffmpeg 转码容器(compose 内网地址); 未配置则跳过转码
+TRANSCODE_URL = os.environ.get("TRANSCODE_URL", "http://transcode:8001")
+
+
+def _to_amr(wav_bytes: bytes) -> bytes | None:
+    """调用独立 ffmpeg 转码容器把 WAV 转成 AMR-NB(8k 单声道). 失败返回 None.
+
+    转码服务只做容器内转码, 不落盘共享, backend 拿回字节存 .amr.
+    """
+    payload = json.dumps({
+        "format": "amr",
+        "audio_b64": base64.b64encode(wav_bytes).decode("ascii"),
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        TRANSCODE_URL + "/transcode", data=payload,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+        if res.get("ok") and res.get("audio_b64"):
+            print(f"[voice] transcoded WAV -> AMR: {len(wav_bytes)} -> {res.get('size')}")
+            return base64.b64decode(res["audio_b64"])
+        print("[voice] transcode not ok:", res.get("msg"))
+        return None
+    except Exception as e:
+        print("[voice] transcode except:", e)
+        return None
 
 
 def _audio_ext(upload: UploadFile) -> str:
@@ -80,8 +114,8 @@ def _normalize_wav(fpath: str) -> str:
         block_align = ch * (bits // 8)
         std_fmt = struct.pack("<HHIIHH", 1, ch, rate, bytes_per_sec, block_align, bits)
         riff_size = 4 + (8 + len(std_fmt)) + (8 + len(data))
-        header = b"RIFF" + struct.pack("<I", riff_size) + b"WAVE" \\
-            + b"fmt " + struct.pack("<I", len(std_fmt)) + std_fmt \\
+        header = b"RIFF" + struct.pack("<I", riff_size) + b"WAVE" \
+            + b"fmt " + struct.pack("<I", len(std_fmt)) + std_fmt \
             + b"data" + struct.pack("<I", len(data)) + data
         with open(fpath, "wb") as f:
             f.write(header)
@@ -94,12 +128,11 @@ def _normalize_wav(fpath: str) -> str:
 
 
 def _save_audio(upload: UploadFile) -> tuple[str, str]:
-    """保存上传音频, 原样下发; 对 WAV 做头规范化(去 JUNK 块), 不做采样率/编解码转码.
+    """保存上传音频; 家人端 WAV 优先转 AMR(8k 单声道)存储下发以加快设备播放.
 
-    真机验证: EC200U 只对干净标准 WAV(无 JUNK 块, 如 44.1k/16bit 立体声) 播放正常.
-    App 端编码器常写入 JUNK 块导致设备 ret -1, 故服务端用 _normalize_wav 规范头,
-    但保持采样率/位深/声道/载荷不变, 不引入 ffmpeg 依赖, 无质量损失.
-    返回 (path, url).
+    流程: 存原始文件 -> 规范 WAV 头(去 JUNK) -> 调转码容器出 AMR.
+    转码器就绪时写 .amr(体积小, 设备下载/播放快), 不可用时保留干净 WAV 兜底
+    (EC200U 可播标准 44.1k/16bit 立体声 WAV). 返回 (path, url).
     """
     os.makedirs(MEDIA_DIR, exist_ok=True)
     ext = _audio_ext(upload)
@@ -107,7 +140,17 @@ def _save_audio(upload: UploadFile) -> tuple[str, str]:
     fpath = os.path.join(MEDIA_DIR, fname)
     with open(fpath, "wb") as f:
         f.write(upload.file.read())
-    _normalize_wav(fpath)
+    normalized = _normalize_wav(fpath)
+    if normalized.lower().endswith(".wav"):
+        with open(normalized, "rb") as f:
+            wav_bytes = f.read()
+        amr = _to_amr(wav_bytes)
+        if amr is not None:
+            amr_path = os.path.splitext(normalized)[0] + ".amr"
+            with open(amr_path, "wb") as f:
+                f.write(amr)
+            os.remove(normalized)
+            fpath = amr_path
     url = f"{PUBLIC_AUDIO_BASE}/media/{os.path.basename(fpath)}"
     return fpath, url
 
@@ -128,7 +171,7 @@ def _audio_ext_from_name(filename: str, content_type: str) -> str:
     return ".amr"
 
 
-def _save_audio_b64(data_b64: str, filename: str = "", content_type: str = "") \\
+def _save_audio_b64(data_b64: str, filename: str = "", content_type: str = "") \
         -> tuple[str, str]:
     """保存 base64 JSON 上传的音频(EC200U 录音). 返回 (path, url).
 
@@ -203,7 +246,7 @@ async def elder_reply(
         audio = form.get("audio")
         if not device_id:
             raise HTTPException(status_code=400, detail="missing device_id")
-        if audio is None or getattr(audio, "filename", None) is None or \\
+        if audio is None or getattr(audio, "filename", None) is None or \
                 getattr(audio, "file", None) is None:
             raise HTTPException(status_code=400, detail="missing audio file")
         path, url = _save_audio(audio)

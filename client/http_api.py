@@ -56,6 +56,7 @@ def post(path, payload, content_type="application/json", timeout_s=None,
     全局锁串行化 + 显式超时, 避免多线程并发 request 导致 socket 挂死.
     """
     _http_lock.acquire()
+    r = None
     try:
         data = payload if isinstance(payload, (bytes, bytearray)) else ujson.dumps(payload)
         headers = _headers(content_type)
@@ -73,11 +74,18 @@ def post(path, payload, content_type="application/json", timeout_s=None,
         print("HTTP POST %s failed: %s" % (path, e))
         return None
     finally:
+        # 统一兜底关闭: 任何提前返回/异常路径都不残留 socket
+        if r is not None:
+            try:
+                r.close()
+            except Exception:
+                pass
         _http_lock.release()
 
 
 def get(path, params=None, timeout_s=None):
     _http_lock.acquire()
+    r = None
     try:
         url = _base() + path
         if params:
@@ -88,6 +96,11 @@ def get(path, params=None, timeout_s=None):
         print("HTTP GET %s failed: %s" % (path, e))
         return None
     finally:
+        if r is not None:
+            try:
+                r.close()
+            except Exception:
+                pass
         _http_lock.release()
 
 
@@ -201,6 +214,7 @@ def multipart_upload(path, fields, file_field, filepath, filename=None,
     buf += ("Content-Type: %s\r\n\r\n" % content_type).encode()
     buf += filedata + b"\r\n"
     buf += b"--" + boundary.encode() + b"--\r\n"
+    r = None
     try:
         r = request.post(
             _base() + path, data=bytes(buf),
@@ -213,3 +227,9 @@ def multipart_upload(path, fields, file_field, filepath, filename=None,
     except Exception as e:
         print("multipart_upload post fail:", path, e)
         return None
+    finally:
+        if r is not None:
+            try:
+                r.close()
+            except Exception:
+                pass

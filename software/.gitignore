@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Flet build / runtime
+build/
+dist/
+*.spec
+src/assets/*.ico
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# 本地音频缓存
+src/.cache/

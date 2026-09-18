@@ -134,7 +134,7 @@ def main():
     if ret == 0:
         print("  waiting ~%ds for playback..." % est_s)
         utime.sleep(est_s)
-    print("=== RESULT: WAV play ret =", ret, "(OK)" if ret == 0 else "(ERR -> 需转码/换格式)")
+    print("=== RESULT: WAV play ret =", ret, ("(OK)" if ret == 0 else "(ERR -> 需转码/换格式)"))
 
 
 main()

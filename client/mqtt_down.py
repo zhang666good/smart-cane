@@ -67,7 +67,27 @@ class MqttDown:
                 self._connected = False
                 time.sleep(2)               # 断线退避后重连
 
+    def _close_client(self, client):
+        """尽力释放 MQTT 客户端占用的 socket, 兼容不同固件 API.
+
+        重连必须释放旧连接, 否则连接失败反复重连会泄漏 socket,
+        最终耗尽 QuecPython socket 池, 导致所有网络请求报 Errno 22 EINVAL.
+        """
+        if client is None:
+            return
+        for m in ("disconnect", "close"):
+            try:
+                getattr(client, m)()
+            except Exception:
+                pass
+        try:
+            client.sock.close()      # umqtt 底层 socket 兜底
+        except Exception:
+            pass
+
     def _connect(self):
+        # 先释放上一次连接占用的 socket, 再新建, 防止重连泄漏
+        self._close_client(self.client)
         self.client = MQTTClient(
             client_id=cfg_get("device_id"),
             server=cfg_get("mqtt_server"),
@@ -77,8 +97,15 @@ class MqttDown:
             keepalive=cfg_get("mqtt_keepalive"),
         )
         self.client.set_callback(self._on_msg)
-        self.client.connect()
-        self.client.subscribe(self.topic, qos=cfg_get("mqtt_qos", 1))
+        try:
+            self.client.connect()
+            self.client.subscribe(self.topic, qos=cfg_get("mqtt_qos", 1))
+        except Exception:
+            # 本次尝试失败: 回收其 socket, 交给 _recv_loop 退避后重建
+            self._close_client(self.client)
+            self.client = None
+            self._connected = False
+            raise
         self._connected = True
         print("MQTT connected & subscribed:", self.topic)
 
