@@ -14,6 +14,7 @@ from mcp.server.mcpserver.tools import Tool
 from .. import db
 from ..mqtt_publisher import publish_to_device
 from .. import dialog_service
+from .weather import query_weather
 
 
 # ---------------- 共享工具实现 ----------------
@@ -177,6 +178,7 @@ _ALL = {
     "switch_conversation_mode": (switch_conversation_mode, ("family", "admin")),
     "get_voice_messages": (get_voice_messages, ("family", "admin")),
     "send_family_voice": (send_family_voice, ("family", "admin")),
+    "query_weather": (query_weather, ("elder", "family", "admin")),
 }
 
 
